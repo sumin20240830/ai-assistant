@@ -1,0 +1,22 @@
+# Python 虚拟环境
+.venv/
+venv/
+
+# 密钥与本地配置
+.env
+.env.*
+!.env.example
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# Node.js
+node_modules/
+
+# 构建输出
+dist/
+build/
+
+# macOS
+.DS_Store
