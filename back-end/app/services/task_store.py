@@ -6,6 +6,7 @@ from app.models.task_schema import SchemaTask, TaskType
 
 
 _tasks: dict[str, SchemaTask] = {}
+_subscribers: dict[str, set[asyncio.Queue]] = {}
 _lock = asyncio.Lock()
 
 
@@ -27,8 +28,9 @@ async def create_task(task_type: TaskType) -> SchemaTask:
 
     async with _lock:
         _tasks[task.taskId] = task
+        _subscribers[task.taskId] = set()
 
-    return task
+    return task.model_copy(deep=True)
 
 
 async def get_task(task_id: str) -> SchemaTask | None:
@@ -51,5 +53,33 @@ async def update_task(task_id: str, **changes) -> SchemaTask | None:
             },
             deep=True,
         )
+        # model_copy 不会重新校验 update，转一次字典确保 SSE 数据合法。
+        updated = SchemaTask.model_validate(updated.model_dump())
         _tasks[task_id] = updated
-        return updated.model_copy(deep=True)
+        subscribers = list(_subscribers.get(task_id, set()))
+        event_data = updated.model_dump(mode="json")
+
+    for queue in subscribers:
+        queue.put_nowait(event_data)
+
+    return updated.model_copy(deep=True)
+
+
+async def subscribe_task(task_id: str) -> asyncio.Queue | None:
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async with _lock:
+        if task_id not in _tasks:
+            return None
+
+        _subscribers[task_id].add(queue)
+
+    return queue
+
+
+async def unsubscribe_task(task_id: str, queue: asyncio.Queue) -> None:
+    async with _lock:
+        subscribers = _subscribers.get(task_id)
+
+        if subscribers is not None:
+            subscribers.discard(queue)

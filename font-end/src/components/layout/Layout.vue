@@ -23,6 +23,7 @@ const loading = ref(false)
 const generationError = ref('')
 const taskState = ref(null)
 let taskRunId = 0
+let taskEventSource = null
 
 const schemaDiff = computed(() => {
   if (!schema.value || !pendingSchema.value) {
@@ -75,6 +76,7 @@ const customerSchema = {
 }
 
 async function selectSession(sessionId) {
+  closeTaskStream()
   taskRunId += 1
   taskState.value = null
   loading.value = false
@@ -87,6 +89,7 @@ async function selectSession(sessionId) {
 }
 
 function createSession() {
+  closeTaskStream()
   taskRunId += 1
   taskState.value = null
   loading.value = false
@@ -122,11 +125,15 @@ async function createVersion(
   return response.data
 }
 
-function wait(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+function closeTaskStream() {
+  if (taskEventSource) {
+    taskEventSource.close()
+    taskEventSource = null
+  }
 }
 
 async function runSchemaTask(payload) {
+  closeTaskStream()
   const runId = ++taskRunId
   const response = await service.post('/api/schema-tasks', payload)
   const taskId = response.data.taskId
@@ -139,29 +146,76 @@ async function runSchemaTask(payload) {
     repairAttempt: 0,
   }
 
-  while (runId === taskRunId) {
-    await wait(800)
+  return new Promise((resolve, reject) => {
+    const eventSource = new EventSource(
+      `/api/schema-tasks/${encodeURIComponent(taskId)}/events`,
+    )
+    taskEventSource = eventSource
 
-    if (runId !== taskRunId) {
-      return null
+    const timeoutId = window.setTimeout(() => {
+      cleanup()
+      reject(new Error('SSE 任务等待超时'))
+    }, 5 * 60 * 1000)
+
+    function cleanup() {
+      window.clearTimeout(timeoutId)
+      eventSource.close()
+
+      if (taskEventSource === eventSource) {
+        taskEventSource = null
+      }
     }
 
-    const taskResponse = await service.get(`/api/schema-tasks/${taskId}`)
-    const task = taskResponse.data
-    taskState.value = task
+    eventSource.addEventListener('task', (event) => {
+      if (runId !== taskRunId) {
+        cleanup()
+        resolve(null)
+        return
+      }
 
-    if (task.status === 'succeeded') {
-      return task.result
+      let task
+
+      try {
+        task = JSON.parse(event.data)
+      } catch {
+        cleanup()
+        reject(new Error('SSE 任务消息格式错误'))
+        return
+      }
+
+      taskState.value = task
+
+      if (task.status === 'succeeded') {
+        cleanup()
+        resolve(task.result)
+      } else if (task.status === 'failed') {
+        cleanup()
+        const taskError = new Error(task.message || '任务执行失败')
+        taskError.task = task
+        reject(taskError)
+      }
+    })
+
+    eventSource.onerror = () => {
+      if (runId !== taskRunId) {
+        cleanup()
+        resolve(null)
+        return
+      }
+
+      // EventSource 会自动重连，保留当前任务状态并提示用户。
+      if (eventSource.readyState === EventSource.CONNECTING) {
+        taskState.value = {
+          ...taskState.value,
+          message: 'SSE 连接中断，正在自动重连…',
+        }
+        return
+      }
+
+      cleanup()
+      reject(new Error('SSE 连接失败'))
     }
-
-    if (task.status === 'failed') {
-      const taskError = new Error(task.message || '任务执行失败')
-      taskError.task = task
-      throw taskError
-    }
-  }
-
-  return null
+  })
 }
 
 async function loadVersions(useLatestSchema = false) {
@@ -273,6 +327,7 @@ async function refineSchema(instruction) {
 }
 
 onBeforeUnmount(() => {
+  closeTaskStream()
   taskRunId += 1
 })
 

@@ -1,9 +1,10 @@
 
-from fastapi.middleware.cors import CORSMiddleware
-
 import asyncio
+import json
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.models.generate_schema import GenerateSchemaRequest, RefineSchemaRequest
 from app.models.validate_schema import EntitySchema
@@ -26,7 +27,13 @@ from app.services.version_store import (
     create_schema_version,
     list_schema_versions,
 )
-from app.services.task_store import create_task, get_task, update_task
+from app.services.task_store import (
+    create_task,
+    get_task,
+    subscribe_task,
+    unsubscribe_task,
+    update_task,
+)
 
 
 app = FastAPI(
@@ -194,6 +201,65 @@ async def get_schema_task(task_id: str) -> SchemaTask:
         raise HTTPException(status_code=404, detail="任务不存在")
 
     return task
+
+# SSE 通过taskId 确认前端查询的是哪个任务，避免前端在任务完成后继续订阅旧的taskId。
+@app.get(
+    "/api/schema-tasks/{task_id}/events",
+    tags=["schema-task"],
+)
+async def stream_schema_task(
+    task_id: str,
+    request: Request,
+) -> StreamingResponse:
+    queue = await subscribe_task(task_id)
+    initial_task = await get_task(task_id)
+
+    if queue is None or initial_task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    async def event_generator():
+        try:
+            # 连接后先推送当前快照，避免任务创建到订阅之间的事件丢失。
+            yield format_task_event(initial_task.model_dump(mode="json"))
+
+            if initial_task.status in {"succeeded", "failed"}:
+                return
+
+            while True:
+                if await request.is_disconnected():
+                    return
+
+                try:
+                    event_data = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=15,
+                    )
+                except TimeoutError:
+                    # SSE 注释行作为心跳，不会触发 EventSource message。
+                    yield ": keep-alive\n\n"
+                    continue
+
+                yield format_task_event(event_data)
+
+                if event_data["status"] in {"succeeded", "failed"}:
+                    return
+        finally:
+            await unsubscribe_task(task_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def format_task_event(task: dict) -> str:
+    payload = json.dumps(task, ensure_ascii=False)
+    return f"event: task\ndata: {payload}\n\n"
 
 #
 
