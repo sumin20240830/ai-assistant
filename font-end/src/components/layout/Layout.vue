@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import Session from './Session.vue'
 import RequirementInput from './Input.vue'
 import SchemaResult from './Result.vue'
@@ -21,6 +21,8 @@ const versionLoading = ref(false)
 const versionError = ref('')
 const loading = ref(false)
 const generationError = ref('')
+const taskState = ref(null)
+let taskRunId = 0
 
 const schemaDiff = computed(() => {
   if (!schema.value || !pendingSchema.value) {
@@ -73,6 +75,9 @@ const customerSchema = {
 }
 
 async function selectSession(sessionId) {
+  taskRunId += 1
+  taskState.value = null
+  loading.value = false
   activeSessionId.value = sessionId
   pendingSchema.value = null
   pendingSource.value = null
@@ -82,6 +87,9 @@ async function selectSession(sessionId) {
 }
 
 function createSession() {
+  taskRunId += 1
+  taskState.value = null
+  loading.value = false
   const id = crypto.randomUUID()
 
   sessions.value.unshift({
@@ -98,15 +106,62 @@ function createSession() {
   versionError.value = ''
 }
 
-async function createVersion(schemaData, source, reason = '') {
+async function createVersion(
+  schemaData,
+  source,
+  reason = '',
+  sessionId = activeSessionId.value,
+) {
   const response = await service.post('/api/schema-versions', {
-    sessionId: activeSessionId.value,
+    sessionId,
     schema: schemaData,
     source,
     reason: reason || null,
   })
 
   return response.data
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+async function runSchemaTask(payload) {
+  const runId = ++taskRunId
+  const response = await service.post('/api/schema-tasks', payload)
+  const taskId = response.data.taskId
+
+  taskState.value = {
+    taskId,
+    status: response.data.status,
+    message: '任务已提交，等待处理',
+    progress: 0,
+    repairAttempt: 0,
+  }
+
+  while (runId === taskRunId) {
+    await wait(800)
+
+    if (runId !== taskRunId) {
+      return null
+    }
+
+    const taskResponse = await service.get(`/api/schema-tasks/${taskId}`)
+    const task = taskResponse.data
+    taskState.value = task
+
+    if (task.status === 'succeeded') {
+      return task.result
+    }
+
+    if (task.status === 'failed') {
+      const taskError = new Error(task.message || '任务执行失败')
+      taskError.task = task
+      throw taskError
+    }
+  }
+
+  return null
 }
 
 async function loadVersions(useLatestSchema = false) {
@@ -137,18 +192,23 @@ async function loadVersions(useLatestSchema = false) {
 }
 
 async function generateSchema(requirement) {
+  const sessionId = activeSessionId.value
   loading.value = true
   generationError.value = ''
 
   try {
-    const response = await service.post('/api/schemas/generate', {
+    const result = await runSchemaTask({
+      type: 'generate',
       requirement,
     })
 
+    if (!result || sessionId !== activeSessionId.value) return
+
     const record = await createVersion(
-      response.data,
+      result,
       'generate',
       '根据用户需求首次生成',
+      sessionId,
     )
 
     schema.value = record.schema
@@ -183,15 +243,19 @@ async function refineSchema(instruction) {
 
   loading.value = true
   generationError.value = ''
+  const sessionId = activeSessionId.value
 
   try {
-    const response = await service.post('/api/schemas/refine', {
+    const result = await runSchemaTask({
+      type: 'refine',
       instruction,
       currentSchema: schema.value,
     })
 
+    if (!result || sessionId !== activeSessionId.value) return
+
     // 先作为候选结果用于 Diff，用户确认前不覆盖当前 Schema。
-    pendingSchema.value = response.data
+    pendingSchema.value = result
     pendingSource.value = 'refine'
     pendingReason.value = instruction
   } catch (error) {
@@ -207,6 +271,10 @@ async function refineSchema(instruction) {
     loading.value = false
   }
 }
+
+onBeforeUnmount(() => {
+  taskRunId += 1
+})
 
 async function applyPendingSchema() {
   if (!pendingSchema.value) return
@@ -272,6 +340,7 @@ function restoreVersion(record) {
     <RequirementInput
       :loading="loading"
       :error="generationError"
+      :task="taskState"
       :has-schema="Boolean(schema)"
       @generate="generateSchema"
       @refine="refineSchema"

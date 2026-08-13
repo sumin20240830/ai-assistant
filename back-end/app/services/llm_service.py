@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from collections.abc import Awaitable, Callable
 
 import httpx
 from dotenv import load_dotenv
@@ -14,6 +15,19 @@ load_dotenv()
 # 最大自动修复次数
 MAX_REPAIR_ATTEMPTS = 2
 MAX_NETWORK_ATTEMPTS = 3
+
+ProgressCallback = Callable[[str, str, int, int], Awaitable[None]]
+
+
+async def notify_progress(
+    callback: ProgressCallback | None,
+    status: str,
+    message: str,
+    progress: int,
+    repair_attempt: int = 0,
+) -> None:
+    if callback is not None:
+        await callback(status, message, progress, repair_attempt)
 
 # 异常处理
 class LLMServiceError(Exception):
@@ -256,6 +270,7 @@ async def call_llm(
 
 async def generate_entity_schema(
     requirement: str,
+    progress_callback: ProgressCallback | None = None,
 ) -> EntitySchema:
     messages = [
         {
@@ -271,12 +286,14 @@ async def generate_entity_schema(
     return await run_schema_workflow(
         requirement=requirement,
         messages=messages,
+        progress_callback=progress_callback,
     )
 
 
 async def refine_entity_schema(
     current_schema: EntitySchema,
     instruction: str,
+    progress_callback: ProgressCallback | None = None,
 ) -> EntitySchema:
     workflow_requirement = f"增量修改指令：{instruction}"
     messages = [
@@ -293,6 +310,7 @@ async def refine_entity_schema(
     result = await run_schema_workflow(
         requirement=workflow_requirement,
         messages=messages,
+        progress_callback=progress_callback,
     )
 
     # 版本号由后端确定，不依赖模型是否正确自增。
@@ -304,6 +322,7 @@ async def refine_entity_schema(
 async def run_schema_workflow(
     requirement: str,
     messages: list[dict],
+    progress_callback: ProgressCallback | None = None,
 ) -> EntitySchema:
     api_key = os.getenv("LLM_API_KEY")
     base_url = os.getenv("LLM_BASE_URL")
@@ -323,12 +342,36 @@ async def run_schema_workflow(
     async with httpx.AsyncClient(timeout=60) as client:
         # 0 表示首次生成，1 和 2 表示两次修复
         for attempt in range(MAX_REPAIR_ATTEMPTS + 1):
+            if attempt == 0:
+                await notify_progress(
+                    progress_callback,
+                    "running",
+                    "正在调用大模型",
+                    25,
+                )
+            else:
+                await notify_progress(
+                    progress_callback,
+                    "repairing",
+                    f"正在进行第 {attempt} 次自动修复",
+                    45 + attempt * 20,
+                    attempt,
+                )
+
             content = await call_llm(
                 client=client,
                 api_key=api_key,
                 base_url=base_url,
                 model=model,
                 messages=messages,
+            )
+
+            await notify_progress(
+                progress_callback,
+                "validating",
+                "正在使用 Pydantic 校验模型结果",
+                55 + attempt * 20,
+                attempt,
             )
 
             schema, validation_errors = parse_and_validate(content)

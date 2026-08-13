@@ -15,6 +15,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  task: {
+    type: Object,
+    default: null,
+  },
 })
 
 const emit = defineEmits(['generate', 'refine'])
@@ -34,6 +38,19 @@ watch(
 
 const canSubmit = computed(() => {
   return requirement.value.trim().length > 0 && !props.loading
+})
+
+const taskStatusLabel = computed(() => {
+  const labels = {
+    queued: '排队中',
+    running: '模型处理中',
+    validating: '校验中',
+    repairing: '自动修复中',
+    succeeded: '已完成',
+    failed: '已失败',
+  }
+
+  return labels[props.task?.status] ?? '等待中'
 })
 
 function submit() {
@@ -84,6 +101,27 @@ function submit() {
             : (hasSchema ? '增量修改' : '生成 Schema')
         }}
       </button>
+
+      <div
+        v-if="task"
+        class="task-status"
+        :class="`task-${task.status}`"
+      >
+        <div class="task-status-header">
+          <strong>{{ taskStatusLabel }}</strong>
+          <span>{{ task.progress ?? 0 }}%</span>
+        </div>
+
+        <div class="task-progress">
+          <span :style="{ width: `${task.progress ?? 0}%` }" />
+        </div>
+
+        <p>{{ task.message }}</p>
+        <small v-if="task.repairAttempt">
+          已进行第 {{ task.repairAttempt }} 次自动修复
+        </small>
+      </div>
+
       <p v-if="error" class="generate-error">
         {{ error }}
       </p>
@@ -181,5 +219,71 @@ textarea:focus {
   background: #fef2f2;
   border: 1px solid #fecaca;
   border-radius: 6px;
+}
+
+.task-status {
+  padding: 12px;
+  margin-top: 12px;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
+
+.task-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.task-status p {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.task-status small {
+  display: block;
+  margin-top: 5px;
+  color: #92400e;
+}
+
+.task-progress {
+  height: 6px;
+  margin-top: 9px;
+  overflow: hidden;
+  background: #e2e8f0;
+  border-radius: 999px;
+}
+
+.task-progress span {
+  display: block;
+  height: 100%;
+  background: #1677ff;
+  border-radius: inherit;
+  transition: width 0.25s ease;
+}
+
+.task-repairing {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.task-succeeded {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.task-succeeded .task-progress span {
+  background: #16a34a;
+}
+
+.task-failed {
+  color: #991b1b;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.task-failed .task-progress span {
+  background: #dc2626;
 }
 </style>
