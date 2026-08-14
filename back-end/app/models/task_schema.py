@@ -19,6 +19,7 @@ TaskStatus = Literal[
 # 项目支持两种异步任务
 # generate：首次生成 Schema
 # refine：增量修改 Schema
+# 参数来自于前端接口发送的请求体
 class CreateSchemaTaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
