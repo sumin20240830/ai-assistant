@@ -2,11 +2,17 @@
 import asyncio
 import json
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from app.models.generate_schema import GenerateSchemaRequest, RefineSchemaRequest
+from app.models.knowledge_schema import (
+    KnowledgeChunkListResponse,
+    KnowledgeIndexSummary,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+)
 from app.models.validate_schema import EntitySchema
 from app.models.version_schema import (
     CreateSchemaVersionRequest,
@@ -22,6 +28,13 @@ from app.services.llm_service import (
     LLMServiceError,
     generate_entity_schema,
     refine_entity_schema,
+)
+from app.services.knowledge_service import (
+    KnowledgeBaseError,
+    get_knowledge_index_summary,
+    list_knowledge_chunks,
+    reindex_knowledge_base,
+    search_knowledge,
 )
 from app.services.version_store import (
     create_schema_version,
@@ -52,6 +65,73 @@ app.add_middleware(
 @app.get("/health", tags=["system"])
 async def health():
     return {"status": "ok"}
+
+
+@app.get(
+    "/api/knowledge/status",
+    response_model=KnowledgeIndexSummary,
+    tags=["knowledge"],
+)
+async def get_knowledge_status() -> KnowledgeIndexSummary:
+    try:
+        return await asyncio.to_thread(get_knowledge_index_summary)
+    except KnowledgeBaseError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post(
+    "/api/knowledge/reindex",
+    response_model=KnowledgeIndexSummary,
+    tags=["knowledge"],
+)
+async def reindex_knowledge() -> KnowledgeIndexSummary:
+    try:
+        return await asyncio.to_thread(reindex_knowledge_base)
+    except KnowledgeBaseError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.get(
+    "/api/knowledge/chunks",
+    response_model=KnowledgeChunkListResponse,
+    tags=["knowledge"],
+)
+async def get_knowledge_chunks(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> KnowledgeChunkListResponse:
+    try:
+        items, total = await asyncio.to_thread(
+            list_knowledge_chunks,
+            offset,
+            limit,
+        )
+        return KnowledgeChunkListResponse(items=items, total=total)
+    except KnowledgeBaseError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post(
+    "/api/knowledge/search",
+    response_model=KnowledgeSearchResponse,
+    tags=["knowledge"],
+)
+async def search_knowledge_base(
+    request: KnowledgeSearchRequest,
+) -> KnowledgeSearchResponse:
+    try:
+        items = await asyncio.to_thread(
+            search_knowledge,
+            request.query,
+            request.topK,
+        )
+        return KnowledgeSearchResponse(
+            query=request.query,
+            items=items,
+            total=len(items),
+        )
+    except KnowledgeBaseError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 @app.post(

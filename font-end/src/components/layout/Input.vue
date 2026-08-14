@@ -43,6 +43,7 @@ const canSubmit = computed(() => {
 const taskStatusLabel = computed(() => {
   const labels = {
     queued: '排队中',
+    retrieving: '检索知识库',
     running: '模型处理中',
     validating: '校验中',
     repairing: '自动修复中',

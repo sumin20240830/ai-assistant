@@ -9,6 +9,7 @@ from app.models.validate_schema import EntitySchema
 TaskType = Literal["generate", "refine"]
 TaskStatus = Literal[
     "queued",
+    "retrieving",
     "running",
     "validating",
     "repairing",

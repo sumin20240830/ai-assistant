@@ -18,5 +18,8 @@ node_modules/
 dist/
 build/
 
+# 运行时生成的知识库索引
+back-end/data/knowledge_base.db*
+
 # macOS
 .DS_Store
